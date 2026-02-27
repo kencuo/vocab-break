@@ -1,0 +1,11 @@
+{
+  "display_name": "背词小窗（阅读）",
+  "loading_order": 60,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "ctrl",
+  "version": "0.1.0",
+  "homePage": ""
+}
