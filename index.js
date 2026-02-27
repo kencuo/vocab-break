@@ -123,6 +123,10 @@ const DEFAULT_CONFIG = {
 
 let pluginConfig = { ...DEFAULT_CONFIG };
 
+let readerRemotePopoverOpen = false;
+let readerLibraryPopoverOpen = false;
+let readerBookmarkPopoverOpen = false;
+
 const state = {
   panelOpen: false,
   readerPanelOpen: false,
@@ -2469,7 +2473,6 @@ function updateReaderPanel() {
   const readerJumpBtn = panel.querySelector('.vb-reader-jump-btn');
   const readerEncodingSelect = panel.querySelector('.vb-reader-encoding-select');
   const remoteBox = panel.querySelector('.vb-reader-remote');
-  const remoteToggleBtn = panel.querySelector('.vb-reader-remote-toggle');
   const remoteSourceSelect = panel.querySelector('.vb-remote-source');
   const remoteChapterSelect = panel.querySelector('.vb-remote-chapter');
   const remoteStatusEl = panel.querySelector('.vb-reader-remote-status');
@@ -2478,16 +2481,8 @@ function updateReaderPanel() {
   const libraryLoadBtn = panel.querySelector('.vb-library-load');
   const libraryRemoveBtn = panel.querySelector('.vb-library-remove');
   const libraryBox = panel.querySelector('.vb-reader-library');
-  const libraryToggle = panel.querySelector('.vb-reader-library-toggle');
-  const libraryBody = panel.querySelector('.vb-reader-library-body');
-  const toolsBox = panel.querySelector('.vb-reader-tools');
-  const toolsToggle = panel.querySelector('.vb-reader-tools-toggle');
-  const toolsBody = panel.querySelector('.vb-reader-tools-body');
   const readerChatToggle = panel.querySelector('.vb-reader-chat-toggle');
-  const bookmarkWrap = panel.querySelector('.vb-reader-bookmarks');
-  const bookmarkToggle = panel.querySelector('.vb-reader-bookmarks-toggle');
   const bookmarkCount = panel.querySelector('.vb-reader-bookmarks-count');
-  const bookmarkPanel = panel.querySelector('.vb-reader-bookmarks-panel');
 
   if (readerTitleEl) {
     readerTitleEl.textContent = state.reader.title || '未导入 TXT / 未加载远程章节';
@@ -2521,24 +2516,27 @@ function updateReaderPanel() {
     readerChatToggle.classList.toggle('is-on', !!pluginConfig.chatDockOpen);
   }
 
-  if (libraryBox instanceof HTMLElement) {
-    libraryBox.classList.toggle('is-collapsed', !!pluginConfig.readerLibraryCollapsed);
-  }
-  if (libraryBody instanceof HTMLElement) {
-    libraryBody.style.display = pluginConfig.readerLibraryCollapsed ? 'none' : 'flex';
-  }
-  if (libraryToggle instanceof HTMLButtonElement) {
-    libraryToggle.textContent = pluginConfig.readerLibraryCollapsed ? '展开' : '收起';
-  }
+  // Popover show/hide
+  const remotePopover = panel.querySelector('.vb-reader-remote');
+  if (remotePopover) remotePopover.style.display = readerRemotePopoverOpen ? 'flex' : 'none';
 
-  if (toolsBox instanceof HTMLElement) {
-    toolsBox.classList.toggle('is-collapsed', !!pluginConfig.readerToolsCollapsed);
-  }
-  if (toolsBody instanceof HTMLElement) {
-    toolsBody.style.display = pluginConfig.readerToolsCollapsed ? 'none' : 'flex';
-  }
-  if (toolsToggle instanceof HTMLButtonElement) {
-    toolsToggle.textContent = pluginConfig.readerToolsCollapsed ? '展开' : '收起';
+  const libraryPopover = panel.querySelector('.vb-reader-library');
+  if (libraryPopover) libraryPopover.style.display = readerLibraryPopoverOpen ? 'flex' : 'none';
+
+  const bookmarkPopover = panel.querySelector('.vb-reader-bookmarks-popover');
+  if (bookmarkPopover) bookmarkPopover.style.display = readerBookmarkPopoverOpen ? 'flex' : 'none';
+
+  // Icon highlights
+  const remoteBtn = panel.querySelector('.vb-reader-remote-btn');
+  if (remoteBtn) remoteBtn.classList.toggle('is-on', readerRemotePopoverOpen);
+
+  const libraryBtn = panel.querySelector('.vb-reader-library-btn');
+  if (libraryBtn) libraryBtn.classList.toggle('is-on', readerLibraryPopoverOpen);
+
+  const bookmarkIcon = panel.querySelector('.vb-reader-bookmark-icon');
+  if (bookmarkIcon) {
+    bookmarkIcon.classList.toggle('is-on', readerBookmarkPopoverOpen);
+    bookmarkIcon.textContent = state.reader.bookmarks.length > 0 ? '🚩' : '⚑';
   }
 
   if (readerJumpInput instanceof HTMLInputElement) {
@@ -2551,15 +2549,6 @@ function updateReaderPanel() {
     readerJumpBtn.disabled = !state.reader.pages.length;
   }
 
-  if (bookmarkWrap instanceof HTMLElement) {
-    bookmarkWrap.classList.toggle('is-open', !!pluginConfig.readerBookmarksOpen);
-  }
-  if (bookmarkPanel instanceof HTMLElement) {
-    bookmarkPanel.style.display = pluginConfig.readerBookmarksOpen ? 'flex' : 'none';
-  }
-  if (bookmarkToggle instanceof HTMLButtonElement) {
-    bookmarkToggle.textContent = pluginConfig.readerBookmarksOpen ? '收起' : '展开';
-  }
   if (bookmarkCount instanceof HTMLElement) {
     bookmarkCount.textContent = String(state.reader.bookmarks.length || 0);
   }
@@ -2601,15 +2590,12 @@ function updateReaderPanel() {
   }
 
   if (remoteBox instanceof HTMLElement) {
-    remoteBox.classList.toggle('is-collapsed', !!pluginConfig.readerRemoteCollapsed);
-  }
-  if (remoteToggleBtn instanceof HTMLButtonElement) {
-    remoteToggleBtn.textContent = pluginConfig.readerRemoteCollapsed ? '展开' : '收起';
+    remoteBox.classList.toggle('is-collapsed', !readerRemotePopoverOpen);
   }
 
   if (
     state.readerPanelOpen &&
-    !pluginConfig.readerRemoteCollapsed &&
+    readerRemotePopoverOpen &&
     !state.remote.loadingIndex &&
     (state.remote.sourceId !== pluginConfig.readerRemoteSourceId || !state.remote.chapters.length)
   ) {
@@ -3094,15 +3080,16 @@ function ensureReaderPanel() {
     <div class="vb-header">
       <div class="vb-title">阅读小窗</div>
       <div class="vb-header-actions">
-        <button class="vb-reader-chat-toggle" type="button" title="阅读对话">对话</button>
-        <button class="vb-close" type="button" title="关闭">×</button>
+        <button class="vb-reader-remote-btn" type="button" title="远程教材">☁</button>
+        <button class="vb-reader-library-btn" type="button" title="本地书架">🗂</button>
+        <button class="vb-reader-chat-toggle" type="button" title="阅读对话">💬</button>
+        <button class="vb-close" type="button" title="关闭">✕</button>
       </div>
     </div>
     <div class="vb-body vb-body-reader">
-      <div class="vb-reader-remote">
+      <div class="vb-reader-remote vb-popover" style="display:none">
         <div class="vb-reader-remote-head">
           <div class="vb-reader-remote-title">远程教材</div>
-          <button class="vb-reader-remote-toggle" type="button">收起</button>
         </div>
         <div class="vb-reader-remote-body">
           <div class="vb-reader-remote-row">
@@ -3115,11 +3102,14 @@ function ensureReaderPanel() {
           </div>
           <div class="vb-reader-remote-status"></div>
         </div>
+        <div class="vb-reader-encoding">
+          <span class="vb-reader-encoding-label">编码</span>
+          <select class="vb-reader-encoding-select"></select>
+        </div>
       </div>
-      <div class="vb-reader-library">
+      <div class="vb-reader-library vb-popover" style="display:none">
         <div class="vb-reader-library-head">
           <div class="vb-reader-library-title">本地书架</div>
-          <button class="vb-reader-library-toggle" type="button">收起</button>
         </div>
         <div class="vb-reader-library-body">
           <div class="vb-reader-library-row">
@@ -3130,7 +3120,23 @@ function ensureReaderPanel() {
           <div class="vb-reader-library-status"></div>
         </div>
       </div>
-      <div class="vb-reader-title">未导入 TXT</div>
+      <div class="vb-reader-bookmarks-popover vb-popover" style="display:none">
+        <div class="vb-reader-bookmarks-popover-head">
+          <span class="vb-reader-bookmarks-title">书签 <span class="vb-reader-bookmarks-count">0</span></span>
+          <button class="vb-reader-bookmarks-popover-close" type="button">✕</button>
+        </div>
+        <div class="vb-reader-bookmarks-actions">
+          <button class="vb-reader-bookmark-add" type="button">添加书签</button>
+        </div>
+        <div class="vb-reader-bookmarks-list"></div>
+      </div>
+      <div class="vb-reader-title-row">
+        <div class="vb-reader-title">未导入 TXT</div>
+        <div class="vb-reader-title-actions">
+          <button class="vb-reader-bookmark-icon" type="button" title="书签">⚑</button>
+          <button class="vb-reader-import-icon" type="button" title="导入TXT">📄</button>
+        </div>
+      </div>
       <div class="vb-reader-page">暂无内容</div>
     </div>
     <div class="vb-actions vb-actions-reader">
@@ -3138,38 +3144,12 @@ function ensureReaderPanel() {
       <button class="vb-reader-next" type="button">下一页</button>
       <button class="vb-reader-import" type="button">导入TXT</button>
     </div>
-    <div class="vb-reader-tools">
-      <div class="vb-reader-tools-head">
-        <span>阅读设置</span>
-        <button class="vb-reader-tools-toggle" type="button">收起</button>
-      </div>
-      <div class="vb-reader-tools-body">
-        <div class="vb-reader-encoding">
-          <span class="vb-reader-encoding-label">编码</span>
-          <select class="vb-reader-encoding-select"></select>
-        </div>
-        <div class="vb-reader-jump">
-          <input class="vb-reader-jump-input" type="number" min="1" placeholder="页码" />
-          <button class="vb-reader-jump-btn" type="button">跳转</button>
-        </div>
-      </div>
-    </div>
-    <div class="vb-reader-bookmarks">
-      <div class="vb-reader-bookmarks-head">
-        <span class="vb-reader-bookmarks-title">书签
-          <span class="vb-reader-bookmarks-count">0</span>
-        </span>
-        <button class="vb-reader-bookmarks-toggle" type="button">展开</button>
-      </div>
-      <div class="vb-reader-bookmarks-panel">
-        <div class="vb-reader-bookmarks-actions">
-          <button class="vb-reader-bookmark-add" type="button">添加书签</button>
-        </div>
-        <div class="vb-reader-bookmarks-list"></div>
-      </div>
-    </div>
-    <div class="vb-footer">
+    <div class="vb-footer vb-footer-reader">
       <span class="vb-reader-meta"></span>
+      <div class="vb-reader-jump">
+        <input class="vb-reader-jump-input" type="number" min="1" placeholder="页码" />
+        <button class="vb-reader-jump-btn" type="button">跳转</button>
+      </div>
     </div>
   `;
 
@@ -3202,21 +3182,30 @@ function ensureReaderPanel() {
     openReaderFilePicker();
   });
 
-  panel.querySelector('.vb-reader-remote-toggle')?.addEventListener('click', () => {
-    pluginConfig.readerRemoteCollapsed = !pluginConfig.readerRemoteCollapsed;
-    saveSettings();
+  panel.querySelector('.vb-reader-remote-btn')?.addEventListener('click', () => {
+    readerRemotePopoverOpen = !readerRemotePopoverOpen;
+    if (readerRemotePopoverOpen) { readerLibraryPopoverOpen = false; readerBookmarkPopoverOpen = false; }
     updatePanel();
   });
 
-  panel.querySelector('.vb-reader-library-toggle')?.addEventListener('click', () => {
-    pluginConfig.readerLibraryCollapsed = !pluginConfig.readerLibraryCollapsed;
-    saveSettings();
+  panel.querySelector('.vb-reader-library-btn')?.addEventListener('click', () => {
+    readerLibraryPopoverOpen = !readerLibraryPopoverOpen;
+    if (readerLibraryPopoverOpen) { readerRemotePopoverOpen = false; readerBookmarkPopoverOpen = false; }
     updatePanel();
   });
 
-  panel.querySelector('.vb-reader-tools-toggle')?.addEventListener('click', () => {
-    pluginConfig.readerToolsCollapsed = !pluginConfig.readerToolsCollapsed;
-    saveSettings();
+  panel.querySelector('.vb-reader-bookmark-icon')?.addEventListener('click', () => {
+    readerBookmarkPopoverOpen = !readerBookmarkPopoverOpen;
+    if (readerBookmarkPopoverOpen) { readerRemotePopoverOpen = false; readerLibraryPopoverOpen = false; }
+    updatePanel();
+  });
+
+  panel.querySelector('.vb-reader-import-icon')?.addEventListener('click', () => {
+    openReaderFilePicker();
+  });
+
+  panel.querySelector('.vb-reader-bookmarks-popover-close')?.addEventListener('click', () => {
+    readerBookmarkPopoverOpen = false;
     updatePanel();
   });
 
@@ -3236,12 +3225,6 @@ function ensureReaderPanel() {
       }
     });
   }
-
-  panel.querySelector('.vb-reader-bookmarks-toggle')?.addEventListener('click', () => {
-    pluginConfig.readerBookmarksOpen = !pluginConfig.readerBookmarksOpen;
-    saveSettings();
-    updatePanel();
-  });
 
   panel.querySelector('.vb-reader-bookmark-add')?.addEventListener('click', () => {
     addReaderBookmark();
