@@ -111,6 +111,8 @@ const DEFAULT_CONFIG = {
   readerKeepScroll: true,
   readerHistoryEnabled: true,
   readerHistoryStartPage: 0,
+  readerHistoryEndPage: 0,
+  readerHistoryUseCurrentPage: false,
   readerMaxPage: 0,
   chatDockOpen: false,
   apiProvider: 'custom',
@@ -120,6 +122,8 @@ const DEFAULT_CONFIG = {
   apiStream: true,
   jailbreakPrompt: '',
 };
+
+const READER_PAGE_BREAK_TOKEN = '\n\n[[[VB_PAGE_BREAK]]]\n\n';
 
 let pluginConfig = { ...DEFAULT_CONFIG };
 
@@ -154,6 +158,9 @@ const state = {
     text: '',
     pages: [],
     pageIndex: 0,
+    pageMode: 'chars',
+    pageBreakToken: READER_PAGE_BREAK_TOKEN,
+    sourceType: 'txt',
     title: '',
     updatedAt: 0,
     cacheDisabled: false,
@@ -223,6 +230,10 @@ const TEXT_ENCODINGS = [
   { id: 'utf-16be', label: 'UTF-16BE' },
 ];
 
+const PDFJS_CDN_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+const PDFJS_WORKER_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+const JSZIP_CDN_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+
 const API_PROVIDERS = [
   {
     id: 'openai',
@@ -288,6 +299,13 @@ function initConfig() {
   pluginConfig.readerHistoryStartPage = Number.isFinite(Number(pluginConfig.readerHistoryStartPage))
     ? Math.max(0, Number(pluginConfig.readerHistoryStartPage))
     : DEFAULT_CONFIG.readerHistoryStartPage;
+  pluginConfig.readerHistoryEndPage = Number.isFinite(Number(pluginConfig.readerHistoryEndPage))
+    ? Math.max(0, Number(pluginConfig.readerHistoryEndPage))
+    : DEFAULT_CONFIG.readerHistoryEndPage;
+  pluginConfig.readerHistoryUseCurrentPage =
+    typeof pluginConfig.readerHistoryUseCurrentPage === 'boolean'
+      ? pluginConfig.readerHistoryUseCurrentPage
+      : DEFAULT_CONFIG.readerHistoryUseCurrentPage;
   pluginConfig.readerMaxPage = Number.isFinite(Number(pluginConfig.readerMaxPage))
     ? Math.max(0, Number(pluginConfig.readerMaxPage))
     : DEFAULT_CONFIG.readerMaxPage;
@@ -916,7 +934,7 @@ async function loadRemoteChapter(url) {
     const isNotebook = url.toLowerCase().endsWith('.ipynb');
     const content = isNotebook ? extractNotebookText(text) : text;
     const title = state.remote.chapters.find(c => c.url === url)?.title || '远程章节';
-    setReaderText(content, title, { bookKey: `remote:${url}` });
+    setReaderText(content, title, { bookKey: `remote:${url}`, sourceType: 'remote', pageMode: 'chars' });
     pluginConfig.readerRemoteChapterUrl = url;
     saveSettings();
   } catch (err) {
@@ -1257,6 +1275,176 @@ async function readTextFromFile(file, encoding) {
   return decodeTextAuto(buffer);
 }
 
+const SCRIPT_LOAD_CACHE = new Map();
+
+function loadExternalScript(url, globalName) {
+  if (globalName && globalThis[globalName]) {
+    return Promise.resolve(globalThis[globalName]);
+  }
+  if (SCRIPT_LOAD_CACHE.has(url)) {
+    return SCRIPT_LOAD_CACHE.get(url);
+  }
+  const promise = new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[data-vb-src="${url}"]`);
+    const script = existing || document.createElement('script');
+    if (!existing) {
+      script.src = url;
+      script.async = true;
+      script.dataset.vbSrc = url;
+      document.head.appendChild(script);
+    }
+    const cleanup = () => {
+      script.removeEventListener('load', onLoad);
+      script.removeEventListener('error', onError);
+    };
+    const onLoad = () => {
+      cleanup();
+      resolve(globalName ? globalThis[globalName] : true);
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error(`加载脚本失败：${url}`));
+    };
+    script.addEventListener('load', onLoad, { once: true });
+    script.addEventListener('error', onError, { once: true });
+  });
+  SCRIPT_LOAD_CACHE.set(url, promise);
+  return promise;
+}
+
+async function ensurePdfJs() {
+  const lib = await loadExternalScript(PDFJS_CDN_URL, 'pdfjsLib');
+  if (!lib) throw new Error('PDF 解析库加载失败');
+  if (lib.GlobalWorkerOptions) {
+    lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
+  }
+  return lib;
+}
+
+async function ensureJsZip() {
+  const lib = await loadExternalScript(JSZIP_CDN_URL, 'JSZip');
+  if (!lib) throw new Error('EPUB 解析库加载失败');
+  return lib;
+}
+
+function normalizeWhitespace(text) {
+  return String(text || '')
+    .replace(/\r/g, '')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function getFileExtension(name) {
+  const base = String(name || '').trim();
+  const idx = base.lastIndexOf('.');
+  if (idx <= 0) return '';
+  return base.slice(idx + 1).toLowerCase();
+}
+
+function detectReaderFileKind(file) {
+  if (!file) return 'txt';
+  const ext = getFileExtension(file.name);
+  const type = String(file.type || '').toLowerCase();
+  if (ext === 'pdf' || type === 'application/pdf') return 'pdf';
+  if (ext === 'epub' || type === 'application/epub+zip') return 'epub';
+  return 'txt';
+}
+
+function normalizeEpubPath(path) {
+  const parts = String(path || '').split('/');
+  const stack = [];
+  for (const part of parts) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      stack.pop();
+    } else {
+      stack.push(part);
+    }
+  }
+  return stack.join('/');
+}
+
+function resolveEpubPath(base, rel) {
+  const cleanRel = String(rel || '');
+  if (!base) return normalizeEpubPath(cleanRel);
+  return normalizeEpubPath(`${base}/${cleanRel}`);
+}
+
+function extractTextFromHtml(html) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html || '', 'text/html');
+  const body = doc.body;
+  const raw = body?.innerText || body?.textContent || doc.textContent || '';
+  return normalizeWhitespace(raw);
+}
+
+async function extractPdfPages(file) {
+  if (!file || !file.arrayBuffer) throw new Error('当前环境无法读取 PDF');
+  const pdfjsLib = await ensurePdfJs();
+  const buffer = await file.arrayBuffer();
+  const task = pdfjsLib.getDocument({ data: buffer });
+  const doc = await task.promise;
+  const pages = [];
+  for (let i = 1; i <= doc.numPages; i += 1) {
+    const page = await doc.getPage(i);
+    const content = await page.getTextContent();
+    const chunks = [];
+    for (const item of content.items || []) {
+      const str = typeof item?.str === 'string' ? item.str : '';
+      if (str) chunks.push(str);
+      if (item?.hasEOL) chunks.push('\n');
+    }
+    const text = normalizeWhitespace(chunks.join(' '));
+    pages.push(text || '（空白页）');
+  }
+  return pages;
+}
+
+async function extractEpubText(file) {
+  if (!file || !file.arrayBuffer) throw new Error('当前环境无法读取 EPUB');
+  const JSZip = await ensureJsZip();
+  const buffer = await file.arrayBuffer();
+  const zip = await JSZip.loadAsync(buffer);
+  const container = zip.file('META-INF/container.xml');
+  if (!container) throw new Error('EPUB 结构异常（缺少 container.xml）');
+  const containerText = await container.async('text');
+  const containerDoc = new DOMParser().parseFromString(containerText, 'application/xml');
+  const rootfile = containerDoc.querySelector('rootfile');
+  const opfPath = rootfile?.getAttribute('full-path');
+  if (!opfPath) throw new Error('EPUB 结构异常（缺少 OPF）');
+  const opfFile = zip.file(opfPath);
+  if (!opfFile) throw new Error('EPUB 结构异常（OPF 不存在）');
+  const opfText = await opfFile.async('text');
+  const opfDoc = new DOMParser().parseFromString(opfText, 'application/xml');
+  const manifest = new Map();
+  opfDoc.querySelectorAll('manifest > item').forEach(item => {
+    const id = item.getAttribute('id');
+    const href = item.getAttribute('href');
+    const mediaType = item.getAttribute('media-type');
+    if (id && href) {
+      manifest.set(id, { href, mediaType });
+    }
+  });
+  const spineIds = Array.from(opfDoc.querySelectorAll('spine > itemref'))
+    .map(node => node.getAttribute('idref'))
+    .filter(Boolean);
+  const baseDir = opfPath.includes('/') ? opfPath.split('/').slice(0, -1).join('/') : '';
+  const texts = [];
+  for (const id of spineIds) {
+    const item = manifest.get(id);
+    if (!item?.href) continue;
+    const targetPath = resolveEpubPath(baseDir, item.href);
+    const entry = zip.file(targetPath);
+    if (!entry) continue;
+    const html = await entry.async('text');
+    const text = extractTextFromHtml(html);
+    if (text) texts.push(text);
+  }
+  return normalizeWhitespace(texts.join('\n\n'));
+}
+
 function normalizeLibraryItems(raw) {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -1264,12 +1452,14 @@ function normalizeLibraryItems(raw) {
       if (!item || typeof item !== 'object') return null;
       const id = String(item.id || '');
       if (!id) return null;
+      const sourceRaw = String(item.source || item.format || 'txt');
+      const source = sourceRaw === 'local' ? 'txt' : sourceRaw;
       return {
         id,
         title: String(item.title || '本地TXT'),
         updatedAt: Number(item.updatedAt) || 0,
         bytes: Number(item.bytes) || 0,
-        source: String(item.source || 'local'),
+        source,
       };
     })
     .filter(Boolean);
@@ -1300,7 +1490,7 @@ async function saveReaderLibraryIndex(items) {
   await idbSet(READER_LIBRARY_INDEX_KEY, items);
 }
 
-async function addReaderLibraryEntry({ title, content }) {
+async function addReaderLibraryEntry({ title, content, pageMode, pageBreakToken, sourceType }) {
   if (!content || !content.trim()) return null;
   const bytes = new Blob([content]).size;
   if (bytes > Number(pluginConfig.readerCacheMaxBytes)) {
@@ -1308,13 +1498,16 @@ async function addReaderLibraryEntry({ title, content }) {
     return null;
   }
   const safeTitle = title || '本地TXT';
+  const source = sourceType || 'txt';
   const id = `local-${Date.now()}-${getStringHash(`${safeTitle}:${content.slice(0, 200)}`)}`;
   const entry = {
     id,
     title: safeTitle,
     updatedAt: Date.now(),
     bytes,
-    source: 'local',
+    source,
+    pageMode: pageMode === 'fixed' ? 'fixed' : 'chars',
+    pageBreakToken: pageBreakToken || READER_PAGE_BREAK_TOKEN,
   };
   const next = state.reader.library.items.filter(it => it.title !== safeTitle);
   next.unshift(entry);
@@ -1349,7 +1542,12 @@ async function loadReaderLibraryEntry(id) {
     if (!raw || typeof raw !== 'object' || !raw.content) {
       throw new Error('未找到内容');
     }
-    setReaderText(raw.content, raw.title || '本地TXT', { bookKey: `book:${id}` });
+    setReaderText(raw.content, raw.title || '本地TXT', {
+      bookKey: `book:${id}`,
+      pageMode: raw.pageMode,
+      pageBreakToken: raw.pageBreakToken,
+      sourceType: raw.source === 'local' ? 'txt' : raw.source || 'txt',
+    });
     state.reader.library.selectedId = id;
     setReaderPanelOpen(true);
   } catch (err) {
@@ -1420,6 +1618,9 @@ async function loadReaderFromStorage() {
     state.reader.title = meta?.title || '本地TXT';
     state.reader.updatedAt = Number.isFinite(meta?.updatedAt) ? meta.updatedAt : 0;
     state.reader.cacheDisabled = false;
+    state.reader.pageMode = meta?.pageMode === 'fixed' ? 'fixed' : 'chars';
+    state.reader.pageBreakToken = meta?.pageBreakToken || READER_PAGE_BREAK_TOKEN;
+    state.reader.sourceType = meta?.sourceType || 'txt';
     const bookKey = meta?.bookKey || `local:${getStringHash(`${state.reader.title}:${text.slice(0, 200)}`)}`;
     setReaderBookKey(bookKey, meta?.bookTitle || state.reader.title);
     paginateReader({ keepPosition: true });
@@ -1445,6 +1646,9 @@ async function saveReaderToStorage() {
     pageSize: pluginConfig.readerPageSize,
     bookKey: state.reader.bookKey || '',
     bookTitle: state.reader.bookTitle || state.reader.title || '本地TXT',
+    pageMode: state.reader.pageMode || 'chars',
+    pageBreakToken: state.reader.pageBreakToken || READER_PAGE_BREAK_TOKEN,
+    sourceType: state.reader.sourceType || 'txt',
   };
   try {
     await idbSet(READER_CONTENT_IDB_KEY, state.reader.text || '');
@@ -1727,6 +1931,17 @@ function paginateByChars(text, size) {
   return pages;
 }
 
+function splitReaderPages(text) {
+  const raw = String(text || '');
+  if (!raw) return [];
+  if (state.reader.pageMode === 'fixed') {
+    const token = state.reader.pageBreakToken || READER_PAGE_BREAK_TOKEN;
+    const parts = raw.split(token);
+    return parts.map(part => part.trim() || '（空白页）');
+  }
+  return paginateByChars(raw, pluginConfig.readerPageSize);
+}
+
 function paginateReader({ keepPosition } = {}) {
   const text = state.reader.text || '';
   if (!text) {
@@ -1735,19 +1950,25 @@ function paginateReader({ keepPosition } = {}) {
     return;
   }
 
-  const currentOffset = keepPosition
-    ? state.reader.pages.slice(0, state.reader.pageIndex).reduce((sum, p) => sum + p.length, 0)
-    : 0;
+  const isFixed = state.reader.pageMode === 'fixed';
+  const currentOffset =
+    keepPosition && !isFixed
+      ? state.reader.pages.slice(0, state.reader.pageIndex).reduce((sum, p) => sum + p.length, 0)
+      : 0;
 
-  state.reader.pages = paginateByChars(text, pluginConfig.readerPageSize);
+  state.reader.pages = splitReaderPages(text);
   if (!state.reader.pages.length) {
     state.reader.pageIndex = 0;
     return;
   }
 
   if (keepPosition) {
-    const newIndex = Math.floor(currentOffset / Math.max(200, Number(pluginConfig.readerPageSize) || 900));
-    state.reader.pageIndex = Math.min(Math.max(newIndex, 0), state.reader.pages.length - 1);
+    if (isFixed) {
+      state.reader.pageIndex = Math.min(Math.max(state.reader.pageIndex, 0), state.reader.pages.length - 1);
+    } else {
+      const newIndex = Math.floor(currentOffset / Math.max(200, Number(pluginConfig.readerPageSize) || 900));
+      state.reader.pageIndex = Math.min(Math.max(newIndex, 0), state.reader.pages.length - 1);
+    }
   } else if (state.reader.pageIndex >= state.reader.pages.length) {
     state.reader.pageIndex = state.reader.pages.length - 1;
   }
@@ -1756,11 +1977,20 @@ function paginateReader({ keepPosition } = {}) {
 function getReaderHistoryRange() {
   const total = state.reader.pages.length;
   if (!total) return null;
-  const maxPage = Math.min(Math.max(1, Number(state.reader.maxPage) || state.reader.pageIndex + 1), total);
+  const currentPage = state.reader.pageIndex + 1;
+  const maxPage = Math.min(Math.max(1, Number(state.reader.maxPage) || currentPage), total);
+  let endPage = maxPage;
+  if (pluginConfig.readerHistoryUseCurrentPage) {
+    endPage = Math.min(Math.max(1, currentPage), total);
+  } else if (Number(pluginConfig.readerHistoryEndPage) > 0) {
+    endPage = Math.min(Math.max(1, Number(pluginConfig.readerHistoryEndPage)), total);
+  }
   const rawStart = Number(pluginConfig.readerHistoryStartPage) || 0;
-  const startPage = rawStart > 0 ? Math.min(rawStart, maxPage) : 1;
-  const pages = state.reader.pages.slice(startPage - 1, maxPage);
-  return { startPage, endPage: maxPage, pages };
+  let startPage = rawStart > 0 ? Math.min(rawStart, endPage) : 1;
+  if (startPage < 1) startPage = 1;
+  if (endPage < startPage) endPage = startPage;
+  const pages = state.reader.pages.slice(startPage - 1, endPage);
+  return { startPage, endPage, pages };
 }
 
 function buildReaderHistoryPrompt() {
@@ -2078,11 +2308,18 @@ function restoreReaderScrollTop(pageEl) {
 }
 
 function setReaderText(text, title, options = {}) {
-  const nextText = text || '';
+  const pageMode = options.pageMode || (Array.isArray(options.pages) ? 'fixed' : 'chars');
+  const pageBreakToken = options.pageBreakToken || READER_PAGE_BREAK_TOKEN;
+  const sourceType = options.sourceType || 'txt';
+  const nextText =
+    text || (Array.isArray(options.pages) ? options.pages.join(pageBreakToken) : '') || '';
   const byteSize = new Blob([nextText]).size;
   state.reader.cacheDisabled = byteSize > Number(pluginConfig.readerCacheMaxBytes);
   state.reader.text = nextText;
   state.reader.title = title || '本地TXT';
+  state.reader.pageMode = pageMode;
+  state.reader.pageBreakToken = pageBreakToken;
+  state.reader.sourceType = sourceType;
   state.reader.pageIndex = 0;
   state.reader.updatedAt = Date.now();
   if (options.bookKey) {
@@ -2091,7 +2328,11 @@ function setReaderText(text, title, options = {}) {
     const fallbackKey = `local:${getStringHash(`${title}:${nextText.slice(0, 200)}`)}`;
     setReaderBookKey(fallbackKey, title);
   }
-  paginateReader({ keepPosition: false });
+  if (Array.isArray(options.pages)) {
+    state.reader.pages = options.pages.slice();
+  } else {
+    paginateReader({ keepPosition: false });
+  }
   if (state.reader.lastPage > 0) {
     state.reader.pageIndex = Math.min(Math.max(state.reader.lastPage - 1, 0), state.reader.pages.length - 1);
   }
@@ -2107,6 +2348,9 @@ function clearReaderText() {
   state.reader.text = '';
   state.reader.pages = [];
   state.reader.pageIndex = 0;
+  state.reader.pageMode = 'chars';
+  state.reader.pageBreakToken = READER_PAGE_BREAK_TOKEN;
+  state.reader.sourceType = 'txt';
   state.reader.title = '';
   state.reader.updatedAt = 0;
   state.reader.cacheDisabled = false;
@@ -2457,6 +2701,16 @@ function updateDrillPanel() {
   }
 }
 
+function getReaderSourceLabel(source) {
+  const raw = String(source || '').toLowerCase();
+  if (!raw || raw === 'local') return '';
+  if (raw === 'txt') return 'TXT';
+  if (raw === 'pdf') return 'PDF';
+  if (raw === 'epub') return 'EPUB';
+  if (raw === 'remote') return '远程';
+  return raw.toUpperCase();
+}
+
 function updateReaderPanel() {
   const panel = document.getElementById('vocab-break-reader-panel');
   if (!panel) return;
@@ -2485,7 +2739,12 @@ function updateReaderPanel() {
   const bookmarkCount = panel.querySelector('.vb-reader-bookmarks-count');
 
   if (readerTitleEl) {
-    readerTitleEl.textContent = state.reader.title || '未导入 TXT / 未加载远程章节';
+    if (state.reader.title) {
+      const sourceLabel = getReaderSourceLabel(state.reader.sourceType);
+      readerTitleEl.textContent = sourceLabel ? `${state.reader.title} · ${sourceLabel}` : state.reader.title;
+    } else {
+      readerTitleEl.textContent = '未导入阅读内容 / 未加载远程章节';
+    }
   }
 
   if (readerPageEl) {
@@ -2644,12 +2903,14 @@ function updateReaderPanel() {
   if (librarySelect) {
     const items = state.reader.library.items || [];
     if (!items.length) {
-      librarySelect.innerHTML = '<option value="">（暂无已保存TXT）</option>';
+      librarySelect.innerHTML = '<option value="">（暂无已保存内容）</option>';
     } else {
       librarySelect.innerHTML = items
         .map(it => {
           const size = it.bytes ? ` · ${formatBytes(it.bytes)}` : '';
-          return `<option value="${it.id}">${it.title}${size}</option>`;
+          const typeLabel = getReaderSourceLabel(it.source);
+          const typeTag = typeLabel ? ` · ${typeLabel}` : '';
+          return `<option value="${it.id}">${it.title}${typeTag}${size}</option>`;
         })
         .join('');
       const selected = state.reader.library.selectedId || items[0]?.id || '';
@@ -2849,9 +3110,25 @@ function updateSettingsPanel() {
     historyStart.value = pluginConfig.readerHistoryStartPage ? String(pluginConfig.readerHistoryStartPage) : '';
   }
 
+  const historyEnd = root.querySelector(`#${MODULE_NAME}_reader_history_end`);
+  if (historyEnd instanceof HTMLInputElement) {
+    historyEnd.value = pluginConfig.readerHistoryEndPage ? String(pluginConfig.readerHistoryEndPage) : '';
+    historyEnd.disabled = !!pluginConfig.readerHistoryUseCurrentPage;
+  }
+
+  const historyUseCurrent = root.querySelector(`#${MODULE_NAME}_reader_history_use_current`);
+  if (historyUseCurrent instanceof HTMLInputElement) {
+    historyUseCurrent.checked = !!pluginConfig.readerHistoryUseCurrentPage;
+  }
+
   const historyToggle = root.querySelector(`#${MODULE_NAME}_reader_history_enabled`);
   if (historyToggle instanceof HTMLInputElement) {
     historyToggle.checked = !!pluginConfig.readerHistoryEnabled;
+  }
+
+  const historyCurrent = root.querySelector(`#${MODULE_NAME}_reader_history_current`);
+  if (historyCurrent) {
+    historyCurrent.textContent = state.reader.pages.length ? String(state.reader.pageIndex + 1) : '0';
   }
 
   const progressEl = root.querySelector(`#${MODULE_NAME}_reader_history_progress`);
@@ -2891,50 +3168,120 @@ function updatePanel() {
   applyTheme();
 }
 
+async function importReaderFile(file) {
+  if (!file) return;
+  const kind = detectReaderFileKind(file);
+  if (kind === 'pdf') {
+    toastr?.info?.('正在解析 PDF，请稍候…', '背词小窗');
+    const pages = await extractPdfPages(file);
+    if (!pages.length) {
+      toastr?.warning?.('PDF 没有可读取的文本。', '背词小窗');
+      return;
+    }
+    const pageBreakToken = READER_PAGE_BREAK_TOKEN;
+    const combined = pages.join(pageBreakToken);
+    const sample = pages.find(p => p && p !== '（空白页）') || pages[0] || '';
+    const tempKey = `local:${getStringHash(`${file.name}:${sample.slice(0, 200)}`)}`;
+    setReaderText(combined, file.name, {
+      bookKey: tempKey,
+      pageMode: 'fixed',
+      pageBreakToken,
+      sourceType: 'pdf',
+      pages,
+    });
+    const entryId = await addReaderLibraryEntry({
+      title: file.name,
+      content: combined,
+      pageMode: 'fixed',
+      pageBreakToken,
+      sourceType: 'pdf',
+    });
+    if (entryId) {
+      const newKey = `book:${entryId}`;
+      migrateReaderBookmarks(tempKey, newKey);
+      setReaderBookKey(newKey, file.name);
+    }
+    setReaderPanelOpen(true);
+    toastr?.success?.('已导入 PDF 阅读内容。', '背词小窗');
+    updatePanel();
+    return;
+  }
+
+  if (kind === 'epub') {
+    toastr?.info?.('正在解析 EPUB，请稍候…', '背词小窗');
+    const text = await extractEpubText(file);
+    if (!text || !text.trim()) {
+      toastr?.warning?.('EPUB 没有可读取的文本。', '背词小窗');
+      return;
+    }
+    const tempKey = `local:${getStringHash(`${file.name}:${text.slice(0, 200)}`)}`;
+    setReaderText(text, file.name, { bookKey: tempKey, sourceType: 'epub', pageMode: 'chars' });
+    const entryId = await addReaderLibraryEntry({
+      title: file.name,
+      content: text,
+      pageMode: 'chars',
+      sourceType: 'epub',
+    });
+    if (entryId) {
+      const newKey = `book:${entryId}`;
+      migrateReaderBookmarks(tempKey, newKey);
+      setReaderBookKey(newKey, file.name);
+    }
+    setReaderPanelOpen(true);
+    toastr?.success?.('已导入 EPUB 阅读内容。', '背词小窗');
+    updatePanel();
+    return;
+  }
+
+  const result = await readTextFromFile(file, pluginConfig.readerEncoding);
+  const text = result.text;
+  if (!text || !text.trim()) {
+    toastr?.warning?.('TXT 为空或无法读取。', '背词小窗');
+    return;
+  }
+  const tempKey = `local:${getStringHash(`${file.name}:${text.slice(0, 200)}`)}`;
+  setReaderText(text, file.name, { bookKey: tempKey, sourceType: 'txt', pageMode: 'chars' });
+  const byteSize = new Blob([text]).size;
+  if (byteSize <= Number(pluginConfig.readerCacheMaxBytes)) {
+    const entryId = await addReaderLibraryEntry({
+      title: file.name,
+      content: text,
+      pageMode: 'chars',
+      sourceType: 'txt',
+    });
+    if (entryId) {
+      const newKey = `book:${entryId}`;
+      migrateReaderBookmarks(tempKey, newKey);
+      setReaderBookKey(newKey, file.name);
+    }
+  }
+  setReaderPanelOpen(true);
+  if (pluginConfig.readerEncoding === 'auto' && result.detected) {
+    const encodingId = result.encoding;
+    if (encodingId && encodingId !== 'utf-8') {
+      const label = getEncodingLabel(encodingId);
+      toastr?.info?.(`自动识别编码：${label}`, '背词小窗');
+    }
+  } else if (pluginConfig.readerEncoding !== 'auto' && result.detected) {
+    const label = getEncodingLabel(result.encoding);
+    toastr?.warning?.(`所选编码不可用，已回退为 ${label || '自动识别'}`, '背词小窗');
+  }
+  toastr?.success?.('已导入 TXT 阅读内容。', '背词小窗');
+  updatePanel();
+}
+
 function ensureReaderFileInput() {
   if (document.getElementById('vocab-break-reader-file')) return;
   const input = document.createElement('input');
   input.type = 'file';
-  input.accept = '.txt,text/plain';
+  input.accept = '.txt,.pdf,.epub,text/plain,application/pdf,application/epub+zip';
   input.id = 'vocab-break-reader-file';
   input.style.display = 'none';
   input.addEventListener('change', async () => {
     const file = input.files?.[0];
     if (!file) return;
     try {
-      const result = await readTextFromFile(file, pluginConfig.readerEncoding);
-      const text = result.text;
-      if (!text || !text.trim()) {
-        toastr?.warning?.('TXT 为空或无法读取。', '背词小窗');
-        return;
-      }
-      const tempKey = `local:${getStringHash(`${file.name}:${text.slice(0, 200)}`)}`;
-      setReaderText(text, file.name, { bookKey: tempKey });
-      const byteSize = new Blob([text]).size;
-      if (byteSize <= Number(pluginConfig.readerCacheMaxBytes)) {
-        const entryId = await addReaderLibraryEntry({
-          title: file.name,
-          content: text,
-        });
-        if (entryId) {
-          const newKey = `book:${entryId}`;
-          migrateReaderBookmarks(tempKey, newKey);
-          setReaderBookKey(newKey, file.name);
-        }
-      }
-      setReaderPanelOpen(true);
-      if (pluginConfig.readerEncoding === 'auto' && result.detected) {
-        const encodingId = result.encoding;
-        if (encodingId && encodingId !== 'utf-8') {
-          const label = getEncodingLabel(encodingId);
-          toastr?.info?.(`自动识别编码：${label}`, '背词小窗');
-        }
-      } else if (pluginConfig.readerEncoding !== 'auto' && result.detected) {
-        const label = getEncodingLabel(result.encoding);
-        toastr?.warning?.(`所选编码不可用，已回退为 ${label || '自动识别'}`, '背词小窗');
-      }
-      toastr?.success?.('已导入 TXT 阅读内容。', '背词小窗');
-      updatePanel();
+      await importReaderFile(file);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toastr?.error?.(msg, '背词小窗');
@@ -3131,18 +3478,18 @@ function ensureReaderPanel() {
         <div class="vb-reader-bookmarks-list"></div>
       </div>
       <div class="vb-reader-title-row">
-        <div class="vb-reader-title">未导入 TXT</div>
-        <div class="vb-reader-title-actions">
-          <button class="vb-reader-bookmark-icon" type="button" title="书签">⚑</button>
-          <button class="vb-reader-import-icon" type="button" title="导入TXT">📄</button>
-        </div>
+      <div class="vb-reader-title">未导入阅读内容</div>
+      <div class="vb-reader-title-actions">
+        <button class="vb-reader-bookmark-icon" type="button" title="书签">⚑</button>
+        <button class="vb-reader-import-icon" type="button" title="导入文件">📄</button>
       </div>
+    </div>
       <div class="vb-reader-page">暂无内容</div>
     </div>
     <div class="vb-actions vb-actions-reader">
       <button class="vb-reader-prev" type="button">上一页</button>
       <button class="vb-reader-next" type="button">下一页</button>
-      <button class="vb-reader-import" type="button">导入TXT</button>
+      <button class="vb-reader-import" type="button">导入文件</button>
     </div>
     <div class="vb-footer vb-footer-reader">
       <span class="vb-reader-meta"></span>
@@ -3530,11 +3877,11 @@ function createSettingsInterface() {
 
       <div class="extension-content-item box-container">
         <div class="settings-title">
-          <div class="settings-title-text">阅读模式（TXT 小说）</div>
-          <div class="settings-title-description">导入长文本并分页阅读</div>
+        <div class="settings-title-text">阅读模式（TXT/PDF/EPUB）</div>
+        <div class="settings-title-description">导入文本并分页阅读</div>
         </div>
         <div class="vb-inline">
-          <button class="menu_button" id="${MODULE_NAME}_reader_import">导入 TXT</button>
+          <button class="menu_button" id="${MODULE_NAME}_reader_import">导入文件</button>
           <button class="menu_button" id="${MODULE_NAME}_reader_clear">清空阅读内容</button>
         </div>
         <div class="vb-inline" style="margin-top: 6px;">
@@ -3544,14 +3891,14 @@ function createSettingsInterface() {
           </select>
         </div>
         <div class="vb-note" style="margin-top: 6px;">
-          导入 TXT 时使用的编码，自动识别适用于常见 UTF-8/GBK/Big5/UTF-16。
+          编码仅对 TXT 有效，自动识别适用于常见 UTF-8/GBK/Big5/UTF-16。
         </div>
         <div class="vb-inline" style="margin-top: 6px;">
           <button class="menu_button" id="${MODULE_NAME}_reader_open">打开阅读面板</button>
           <button class="menu_button" id="${MODULE_NAME}_reader_close">关闭阅读面板</button>
         </div>
         <div class="vb-note" style="margin-top: 6px;">
-          TXT 会缓存到本地浏览器（过大可能无法保存）。
+          导入内容会缓存到本地浏览器（过大可能无法保存）。
         </div>
       </div>
 
@@ -3636,11 +3983,26 @@ function createSettingsInterface() {
           <input id="${MODULE_NAME}_reader_history_start" type="number" min="1" placeholder="默认从1" value="${
             pluginConfig.readerHistoryStartPage || ''
           }" />
-          <span>当前已读</span>
+          <span>结束页</span>
+          <input id="${MODULE_NAME}_reader_history_end" type="number" min="1" placeholder="默认到已读" value="${
+            pluginConfig.readerHistoryEndPage || ''
+          }" />
+        </div>
+        <div class="vb-inline" style="margin-top: 6px;">
+          <span>用当前页作为结束页</span>
+          <label class="toggle">
+            <input id="${MODULE_NAME}_reader_history_use_current" type="checkbox" class="toggle-input" ${
+              pluginConfig.readerHistoryUseCurrentPage ? 'checked' : ''
+            } />
+            <span class="toggle-label"></span>
+          </label>
+          <span>当前页</span>
+          <span id="${MODULE_NAME}_reader_history_current">${state.reader.pageIndex + 1 || 0}</span>
+          <span>已读</span>
           <span id="${MODULE_NAME}_reader_history_progress">${Number(pluginConfig.readerMaxPage) || 0}</span>
         </div>
         <div class="vb-note" style="margin-top: 6px;">
-          起始页为空/0 时默认从第1页开始，范围到当前已读最大页。
+          结束页为空/0 时默认到已读最大页；勾选“用当前页”会忽略结束页。
         </div>
       </div>
 
@@ -3795,6 +4157,21 @@ function createSettingsInterface() {
     if (t.id === `${MODULE_NAME}_reader_history_start`) {
       const v = parseInt(t.value, 10);
       pluginConfig.readerHistoryStartPage = Number.isFinite(v) ? Math.max(0, v) : 0;
+      saveSettings();
+      updatePanel();
+      return;
+    }
+
+    if (t.id === `${MODULE_NAME}_reader_history_end`) {
+      const v = parseInt(t.value, 10);
+      pluginConfig.readerHistoryEndPage = Number.isFinite(v) ? Math.max(0, v) : 0;
+      saveSettings();
+      updatePanel();
+      return;
+    }
+
+    if (t.id === `${MODULE_NAME}_reader_history_use_current`) {
+      pluginConfig.readerHistoryUseCurrentPage = t.checked;
       saveSettings();
       updatePanel();
       return;
