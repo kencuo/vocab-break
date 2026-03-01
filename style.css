@@ -511,25 +511,73 @@
   margin-top: -4px;
 }
 
-#vocab-break-panel .vb-drill-chat {
+#vocab-break-drill-chat-dock {
+  position: fixed;
   display: none;
   flex-direction: column;
+  align-items: flex-end;
   gap: 6px;
-  padding: 6px 10px 10px;
-  border-top: 1px solid var(--SmartThemeBorderColor, #3a3a3a);
+  z-index: 2147483001;
+  font-family: inherit;
 }
 
-#vocab-break-panel .vb-drill-chat-title {
+#vocab-break-drill-chat-dock.is-compact {
+  right: 12px;
+  bottom: 72px;
+  left: auto;
+  top: auto;
+}
+
+#vocab-break-drill-chat-dock .vb-drill-chat-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 280px;
+  max-width: min(360px, 92vw);
+  max-height: 70vh;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid var(--SmartThemeBorderColor, #3a3a3a);
+  background: var(--SmartThemeBlurTintColor, #1f1f1f);
+  color: var(--SmartThemeTextColor, #e6e6e6);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+}
+
+#vocab-break-drill-chat-dock .vb-drill-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#vocab-break-panel .vb-drill-chat-title,
+#vocab-break-drill-chat-dock .vb-drill-chat-title {
   font-size: 11px;
   font-weight: 600;
   opacity: 0.75;
 }
 
-#vocab-break-panel .vb-drill-chat-log {
+#vocab-break-drill-chat-dock .vb-drill-chat-title {
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+#vocab-break-drill-chat-dock .vb-drill-chat-close {
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--SmartThemeBorderColor, #3a3a3a);
+  background: var(--SmartThemeBodyColor, #1f1f1f);
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+#vocab-break-panel .vb-drill-chat-log,
+#vocab-break-drill-chat-dock .vb-drill-chat-log {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 200px;
+  max-height: 220px;
   overflow: auto;
   border: 1px solid var(--SmartThemeBorderColor, #3a3a3a);
   border-radius: 10px;
@@ -538,24 +586,30 @@
   font-size: 12px;
 }
 
-#vocab-break-panel .vb-drill-chat-empty {
+#vocab-break-panel .vb-drill-chat-empty,
+#vocab-break-drill-chat-dock .vb-drill-chat-empty {
   opacity: 0.6;
 }
 
-#vocab-break-panel .vb-drill-chat-msg {
+#vocab-break-panel .vb-drill-chat-msg,
+#vocab-break-drill-chat-dock .vb-drill-chat-msg {
   display: flex;
 }
 
-#vocab-break-panel .vb-drill-chat-msg.vb-chat-user {
+#vocab-break-panel .vb-drill-chat-msg.vb-chat-user,
+#vocab-break-drill-chat-dock .vb-drill-chat-msg.vb-chat-user {
   justify-content: flex-end;
 }
 
 #vocab-break-panel .vb-drill-chat-msg.vb-chat-assistant,
-#vocab-break-panel .vb-drill-chat-msg.vb-chat-system {
+#vocab-break-panel .vb-drill-chat-msg.vb-chat-system,
+#vocab-break-drill-chat-dock .vb-drill-chat-msg.vb-chat-assistant,
+#vocab-break-drill-chat-dock .vb-drill-chat-msg.vb-chat-system {
   justify-content: flex-start;
 }
 
-#vocab-break-panel .vb-drill-chat-bubble {
+#vocab-break-panel .vb-drill-chat-bubble,
+#vocab-break-drill-chat-dock .vb-drill-chat-bubble {
   max-width: 85%;
   padding: 6px 10px;
   border-radius: 12px;
@@ -567,13 +621,15 @@
   line-height: 1.4;
 }
 
-#vocab-break-panel .vb-drill-chat-msg.vb-chat-user .vb-drill-chat-bubble {
+#vocab-break-panel .vb-drill-chat-msg.vb-chat-user .vb-drill-chat-bubble,
+#vocab-break-drill-chat-dock .vb-drill-chat-msg.vb-chat-user .vb-drill-chat-bubble {
   border-color: rgba(0, 0, 0, 0.1);
   background: linear-gradient(135deg, rgba(74, 163, 255, 0.9), rgba(79, 231, 199, 0.85));
   color: #0b1220;
 }
 
-#vocab-break-panel .vb-drill-chat-input {
+#vocab-break-panel .vb-drill-chat-input,
+#vocab-break-drill-chat-dock .vb-drill-chat-input {
   width: 100%;
   min-height: 60px;
   resize: vertical;
@@ -585,13 +641,15 @@
   font-size: 12px;
 }
 
-#vocab-break-panel .vb-drill-chat-actions {
+#vocab-break-panel .vb-drill-chat-actions,
+#vocab-break-drill-chat-dock .vb-drill-chat-actions {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
 }
 
-#vocab-break-panel .vb-drill-chat-actions button {
+#vocab-break-panel .vb-drill-chat-actions button,
+#vocab-break-drill-chat-dock .vb-drill-chat-actions button {
   flex: 1;
   min-width: 70px;
   padding: 6px 8px;
@@ -603,7 +661,8 @@
   cursor: pointer;
 }
 
-#vocab-break-panel .vb-drill-chat-status {
+#vocab-break-panel .vb-drill-chat-status,
+#vocab-break-drill-chat-dock .vb-drill-chat-status {
   font-size: 11px;
   opacity: 0.7;
 }
@@ -1168,6 +1227,7 @@
 #vocab-break-reader-panel.vb-theme-archive,
 #vocab-break-bar.vb-theme-archive,
 #vocab-break-reader-bar.vb-theme-archive,
+#vocab-break-drill-chat-dock.vb-theme-archive,
 #vocab-break-reader-chat-dock.vb-theme-archive {
   background: #f2ece3;
   color: #2f2a24;
@@ -1204,6 +1264,7 @@
 #vocab-break-reader-panel.vb-theme-ancient,
 #vocab-break-bar.vb-theme-ancient,
 #vocab-break-reader-bar.vb-theme-ancient,
+#vocab-break-drill-chat-dock.vb-theme-ancient,
 #vocab-break-reader-chat-dock.vb-theme-ancient {
   background: linear-gradient(135deg, #3b2d1f, #2a1f16);
   color: #f1e6d2;
@@ -1241,6 +1302,7 @@
 #vocab-break-reader-panel.vb-theme-custom,
 #vocab-break-bar.vb-theme-custom,
 #vocab-break-reader-bar.vb-theme-custom,
+#vocab-break-drill-chat-dock.vb-theme-custom,
 #vocab-break-reader-chat-dock.vb-theme-custom {
   border-color: var(--SmartThemeAccentColor, #4aa3ff);
 }
