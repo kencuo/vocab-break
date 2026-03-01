@@ -13,7 +13,7 @@
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
   display: none;
   flex-direction: column;
-  z-index: 9999;
+  z-index: 2147483000;
   font-family: inherit;
 }
 
@@ -48,7 +48,7 @@
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
   backdrop-filter: blur(var(--SmartThemeBlurStrength, 6px));
   cursor: pointer;
-  z-index: 9998;
+  z-index: 2147482999;
   font-size: 12px;
   user-select: none;
   transition: background 0.2s ease, transform 0.2s ease;
@@ -861,7 +861,7 @@
   flex-direction: column;
   align-items: flex-end;
   gap: 6px;
-  z-index: 10001;
+  z-index: 2147483001;
   font-family: inherit;
 }
 
