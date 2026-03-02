@@ -749,7 +749,8 @@ function applyFloatingPositions() {
   const drillBar = document.getElementById('vocab-break-bar');
   const readerPanel = document.getElementById('vocab-break-reader-panel');
   const readerBar = document.getElementById('vocab-break-reader-bar');
-  const chatDock = document.getElementById('vocab-break-reader-chat-dock');
+  const drillChatDock = document.getElementById('vocab-break-drill-chat-dock');
+  const readerChatDock = document.getElementById('vocab-break-reader-chat-dock');
   const barFallback = { width: 260, height: 40 };
 
   if (drillPanel) {
@@ -770,32 +771,61 @@ function applyFloatingPositions() {
     }
   }
 
-  if (chatDock) {
-    if (chatDock.classList.contains('is-modal')) return;
+  if (drillChatDock) {
+    if (drillChatDock.classList.contains('is-modal')) {
+      // Mobile modal position is handled by updateDrillChatDock().
+    } else if (isCompactViewport()) {
+      drillChatDock.classList.add('is-compact');
+      drillChatDock.style.left = 'auto';
+      drillChatDock.style.top = 'auto';
+      drillChatDock.style.right = '12px';
+      drillChatDock.style.bottom = '72px';
+    } else {
+      drillChatDock.classList.remove('is-compact');
+      const pos = getPanelPos('drill');
+      if (pos) {
+        const drillSize = drillPanel ? getElementSize(drillPanel, getPanelSize('drill')) : getPanelSize('drill');
+        const dockSize = getElementSize(drillChatDock, { width: 260, height: 360 });
+        let x = pos.x + drillSize.width + 8;
+        let y = pos.y + 12;
+        if (x + dockSize.width > window.innerWidth - DRAG_MARGIN) {
+          x = pos.x - dockSize.width - 8;
+        }
+        const clamped = clampPosition(x, y, dockSize);
+        drillChatDock.style.left = `${clamped.x}px`;
+        drillChatDock.style.top = `${clamped.y}px`;
+        drillChatDock.style.right = 'auto';
+        drillChatDock.style.bottom = 'auto';
+      }
+    }
+  }
+
+  if (readerChatDock) {
+    if (readerChatDock.classList.contains('is-modal')) return;
     if (isCompactViewport()) {
-      chatDock.classList.add('is-compact');
-      chatDock.style.left = 'auto';
-      chatDock.style.top = 'auto';
-      chatDock.style.right = '12px';
-      chatDock.style.bottom = '72px';
+      readerChatDock.classList.add('is-compact');
+      readerChatDock.style.left = 'auto';
+      readerChatDock.style.top = 'auto';
+      readerChatDock.style.right = '12px';
+      readerChatDock.style.bottom = '72px';
       return;
     }
 
-    chatDock.classList.remove('is-compact');
+    readerChatDock.classList.remove('is-compact');
     const pos = getPanelPos('reader');
     if (pos) {
       const readerSize = readerPanel ? getElementSize(readerPanel, getPanelSize('reader')) : getPanelSize('reader');
-      const dockSize = getElementSize(chatDock, { width: 220, height: 40 });
+      const dockSize = getElementSize(readerChatDock, { width: 220, height: 40 });
       let x = pos.x + readerSize.width + 8;
       let y = pos.y + 12;
       if (x + dockSize.width > window.innerWidth - DRAG_MARGIN) {
         x = pos.x - dockSize.width - 8;
       }
       const clamped = clampPosition(x, y, dockSize);
-      chatDock.style.left = `${clamped.x}px`;
-      chatDock.style.top = `${clamped.y}px`;
-      chatDock.style.right = 'auto';
-      chatDock.style.bottom = 'auto';
+      readerChatDock.style.left = `${clamped.x}px`;
+      readerChatDock.style.top = `${clamped.y}px`;
+      readerChatDock.style.right = 'auto';
+      readerChatDock.style.bottom = 'auto';
     }
   }
 }
@@ -1808,8 +1838,9 @@ function applyTheme() {
   const bar = document.getElementById('vocab-break-bar');
   const readerPanel = document.getElementById('vocab-break-reader-panel');
   const readerBar = document.getElementById('vocab-break-reader-bar');
+  const drillChatDock = document.getElementById('vocab-break-drill-chat-dock');
   const chatDock = document.getElementById('vocab-break-reader-chat-dock');
-  const els = [panel, bar, readerPanel, readerBar, chatDock].filter(Boolean);
+  const els = [panel, bar, readerPanel, readerBar, drillChatDock, chatDock].filter(Boolean);
   if (!els.length) return;
 
   for (const el of els) {
@@ -2166,9 +2197,17 @@ function buildDrillWordContext() {
   return lines.join('\n');
 }
 
-function queueDrillChatMessage() {
+function getDrillChatInput() {
+  const dock = document.getElementById('vocab-break-drill-chat-dock');
+  const dockInput = dock?.querySelector('.vb-drill-chat-input');
+  if (dockInput instanceof HTMLTextAreaElement) return dockInput;
   const panel = document.getElementById('vocab-break-panel');
-  const input = panel?.querySelector('.vb-drill-chat-input');
+  const panelInput = panel?.querySelector('.vb-drill-chat-input');
+  return panelInput instanceof HTMLTextAreaElement ? panelInput : null;
+}
+
+function queueDrillChatMessage() {
+  const input = getDrillChatInput();
   if (!(input instanceof HTMLTextAreaElement)) return;
   const text = input.value.trim();
   if (!text) return;
@@ -2783,12 +2822,6 @@ function updateDrillPanel() {
   const pinBtn = panel.querySelector('.vb-pin');
   const statusBtns = panel.querySelectorAll('[data-status]');
   const chatToggle = panel.querySelector('.vb-drill-chat-toggle');
-  const chatBox = panel.querySelector('.vb-drill-chat');
-  const chatLog = panel.querySelector('.vb-drill-chat-log');
-  const chatStatus = panel.querySelector('.vb-drill-chat-status');
-  const chatSendBtn = panel.querySelector('.vb-drill-chat-send');
-  const chatGenerateBtn = panel.querySelector('.vb-drill-chat-generate');
-  const chatWordBtn = panel.querySelector('.vb-drill-chat-word');
 
   if (status) {
     if (state.loading) status.textContent = '加载中';
@@ -2858,11 +2891,18 @@ function updateDrillPanel() {
   if (chatToggle) {
     chatToggle.classList.toggle('is-on', !!state.drillChat.open);
   }
+}
 
-  if (chatBox instanceof HTMLElement) {
-    chatBox.style.display = state.drillChat.open ? 'flex' : 'none';
-  }
+function updateDrillChatDock() {
+  const dock = document.getElementById('vocab-break-drill-chat-dock');
+  if (!dock) return;
 
+  const shouldShow = pluginConfig.enableDrill && state.panelOpen && !!state.drillChat.open;
+  dock.style.display = shouldShow ? 'flex' : 'none';
+  const compact = isCompactViewport();
+  dock.classList.toggle('is-compact', compact);
+
+  const chatLog = dock.querySelector('.vb-drill-chat-log');
   if (chatLog instanceof HTMLElement) {
     chatLog.innerHTML = '';
     if (!state.drillChat.messages.length) {
@@ -2884,6 +2924,7 @@ function updateDrillPanel() {
     }
   }
 
+  const chatStatus = dock.querySelector('.vb-drill-chat-status');
   if (chatStatus) {
     if (state.drillChat.sending) {
       chatStatus.textContent = '生成中…';
@@ -2903,15 +2944,50 @@ function updateDrillPanel() {
     state.drillChat.messages.length &&
     state.drillChat.messages[state.drillChat.messages.length - 1].role === 'user';
 
+  const chatSendBtn = dock.querySelector('.vb-drill-chat-send');
   if (chatSendBtn instanceof HTMLButtonElement) {
     chatSendBtn.disabled = state.drillChat.sending;
   }
+  const chatGenerateBtn = dock.querySelector('.vb-drill-chat-generate');
   if (chatGenerateBtn instanceof HTMLButtonElement) {
     chatGenerateBtn.disabled = state.drillChat.sending || !hasPending;
   }
+  const chatWordBtn = dock.querySelector('.vb-drill-chat-word');
   if (chatWordBtn instanceof HTMLButtonElement) {
     chatWordBtn.disabled = !getCurrentItem();
   }
+
+  if (!shouldShow) {
+    dock.classList.remove('is-modal');
+    dock.style.width = '';
+    dock.style.height = '';
+    dock.style.left = '';
+    dock.style.top = '';
+    dock.style.right = '';
+    dock.style.bottom = '';
+    return;
+  }
+
+  const panel = document.getElementById('vocab-break-panel');
+  if (compact && panel) {
+    const rect = panel.getBoundingClientRect();
+    dock.classList.add('is-modal');
+    dock.style.left = `${Math.round(rect.left)}px`;
+    dock.style.top = `${Math.round(rect.top)}px`;
+    dock.style.right = 'auto';
+    dock.style.bottom = 'auto';
+    dock.style.width = `${Math.round(rect.width)}px`;
+    dock.style.height = `${Math.round(rect.height)}px`;
+    return;
+  }
+
+  dock.classList.remove('is-modal');
+  dock.style.width = '';
+  dock.style.height = '';
+  dock.style.left = '';
+  dock.style.top = '';
+  dock.style.right = '';
+  dock.style.bottom = '';
 }
 
 function getReaderSourceLabel(source) {
@@ -3352,6 +3428,7 @@ function updateSettingsPanel() {
 
 function updatePanel() {
   updateDrillPanel();
+  updateDrillChatDock();
   updateReaderPanel();
   updateChatDock();
   updateSettingsPanel();
@@ -3586,18 +3663,6 @@ function ensurePanel() {
       <button class="vb-status-btn" data-status="familiar" type="button">熟悉</button>
       <button class="vb-status-btn" data-status="none" type="button">清除</button>
     </div>
-    <div class="vb-drill-chat" style="display:none">
-      <div class="vb-drill-chat-title">背词对话</div>
-      <div class="vb-drill-chat-log"></div>
-      <textarea class="vb-drill-chat-input" rows="3" placeholder="输入消息，或点“发当前单词”"></textarea>
-      <div class="vb-drill-chat-actions">
-        <button class="vb-drill-chat-send" type="button">发送</button>
-        <button class="vb-drill-chat-word" type="button">发当前单词</button>
-        <button class="vb-drill-chat-generate" type="button">生成回复</button>
-        <button class="vb-drill-chat-clear" type="button">清空</button>
-      </div>
-      <div class="vb-drill-chat-status"></div>
-    </div>
     <div class="vb-footer">
       <span class="vb-meta">-</span>
     </div>
@@ -3633,32 +3698,6 @@ function ensurePanel() {
   panel.querySelector('.vb-next')?.addEventListener('click', () => {
     nextItem();
   });
-
-  panel.querySelector('.vb-drill-chat-send')?.addEventListener('click', () => {
-    queueDrillChatMessage();
-  });
-
-  panel.querySelector('.vb-drill-chat-word')?.addEventListener('click', () => {
-    appendCurrentWordToDrillChat();
-  });
-
-  panel.querySelector('.vb-drill-chat-generate')?.addEventListener('click', () => {
-    generateDrillChatReply();
-  });
-
-  panel.querySelector('.vb-drill-chat-clear')?.addEventListener('click', () => {
-    clearDrillChatMessages();
-  });
-
-  const drillChatInput = panel.querySelector('.vb-drill-chat-input');
-  if (drillChatInput instanceof HTMLTextAreaElement) {
-    drillChatInput.addEventListener('keydown', e => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        queueDrillChatMessage();
-      }
-    });
-  }
 
   panel.querySelectorAll('.vb-status-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -3907,6 +3946,63 @@ function ensureReaderPanel() {
   });
 
   updatePanel();
+}
+
+function ensureDrillChatDock() {
+  if (document.getElementById('vocab-break-drill-chat-dock')) return;
+  const dock = document.createElement('div');
+  dock.id = 'vocab-break-drill-chat-dock';
+  dock.innerHTML = `
+    <div class="vb-drill-chat-panel">
+      <div class="vb-drill-chat-header">
+        <div class="vb-drill-chat-title">背词对话</div>
+        <button class="vb-drill-chat-close" type="button">返回</button>
+      </div>
+      <div class="vb-drill-chat-log"></div>
+      <textarea class="vb-drill-chat-input" rows="3" placeholder="输入消息，或点“发当前单词”"></textarea>
+      <div class="vb-drill-chat-actions">
+        <button class="vb-drill-chat-send" type="button">发送</button>
+        <button class="vb-drill-chat-word" type="button">发当前单词</button>
+        <button class="vb-drill-chat-generate" type="button">生成回复</button>
+        <button class="vb-drill-chat-clear" type="button">清空</button>
+      </div>
+      <div class="vb-drill-chat-status"></div>
+    </div>
+  `;
+
+  dock.addEventListener('click', e => e.stopPropagation());
+  document.body.appendChild(dock);
+
+  dock.querySelector('.vb-drill-chat-close')?.addEventListener('click', () => {
+    state.drillChat.open = false;
+    updatePanel();
+  });
+
+  dock.querySelector('.vb-drill-chat-send')?.addEventListener('click', () => {
+    queueDrillChatMessage();
+  });
+
+  dock.querySelector('.vb-drill-chat-word')?.addEventListener('click', () => {
+    appendCurrentWordToDrillChat();
+  });
+
+  dock.querySelector('.vb-drill-chat-generate')?.addEventListener('click', () => {
+    generateDrillChatReply();
+  });
+
+  dock.querySelector('.vb-drill-chat-clear')?.addEventListener('click', () => {
+    clearDrillChatMessages();
+  });
+
+  const drillChatInput = dock.querySelector('.vb-drill-chat-input');
+  if (drillChatInput instanceof HTMLTextAreaElement) {
+    drillChatInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        queueDrillChatMessage();
+      }
+    });
+  }
 }
 
 function ensureReaderChatDock() {
@@ -4660,6 +4756,7 @@ function init() {
   ensureReaderBar();
   ensurePanel();
   ensureReaderPanel();
+  ensureDrillChatDock();
   ensureReaderChatDock();
   bindDragEvents();
   createSettingsInterface();
